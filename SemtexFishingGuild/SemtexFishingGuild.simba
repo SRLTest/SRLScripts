@@ -1,0 +1,576 @@
+program SemtexFishingGuild;
+{$DEFINE SMART}
+{$i srl-6/srl.simba}
+{$i sps/lib/sps-rs3.simba}
+{$i srl-6/lib/misc/srlplayerform.simba}
+
+const
+Version = 1.2;
+
+var
+  LoadsDone, fishCaught, startingXP: integer;
+  fishSpot: Tpoint;
+  overText, optionText: TStringArray;
+  FailTimer: TTimeMarker;
+
+procedure initPlayerForm();
+begin
+  with playerForm do
+  begin
+   name := 'Semtex Fishing Guild';
+   editBoxLabels := ['World', 'Break In', 'Break For'];
+   editBoxDefaults := ['-1', '60', '5'];
+   editBoxHints := ['0 For Random World, -1 For Just Play','Minutes Until Break', 'Minutes To Break For'];
+
+   comboBoxLabels := ['Fish Type'];
+   comboBoxDefaults := ['Shark'];
+   comboBoxHints := ['Choose What You Want To Fish'];
+
+   setLength(comboBoxItems, length(comboBoxLabels));
+   comboBoxItems[0] := ['Lobster', 'Swordfish', 'Shark'];
+
+   checkBoxLabels := ['Disable SRL Debug?','Disable Script Debug?'];
+   checkBoxDefaults := ['True', 'True'];
+  end;
+end;
+
+procedure declarePlayers();
+var
+  i: integer;
+begin
+  players.setup(playerForm.players);
+  currentPlayer := 0;
+
+  for i := 0 to high(players) do
+    with players[i] do
+    begin
+      integers[0] := strToInt(playerForm.players[i].settings[0]);
+      integers[1] := strToInt(playerForm.players[i].settings[1]) * 60000;
+      integers[2] := strToInt(playerForm.players[i].settings[2]) * 60000;
+
+      booleans[0] := strToBool(playerForm.players[i].settings[3]);
+      booleans[1] := strToBool(playerForm.players[i].settings[4]);
+
+      strings[0] := playerForm.players[i].settings[5];
+
+      world := integers[0];
+    end;
+end;
+
+procedure aDebug(Text: string);
+begin
+  if not players[currentPlayer].booleans[1] then
+    writeLn(Text);
+end;
+
+{*Borrowed from The Mayor's Resource Dungeon Script*}
+procedure loginPlayer();
+begin
+  players[currentPlayer].login();
+  wait(randomRange(4000, 6000));
+  minimap.clickCompass();
+  mainscreen.setAngle(MS_ANGLE_HIGH);
+  exitTreasure();
+  closePopup();
+  mainScreen.setZoom(true);
+end;
+
+{*Borrowed from The Mayor's Resource Dungeon Script*}
+procedure takeBreak();
+var
+  time: Integer;
+begin
+  if (players[currentPlayer].worked.getTime() > players[currentPlayer].integers[1]) then
+  begin
+    time := round(players[currentPlayer].integers[2] * 0.1);
+    time := players[currentPlayer].integers[2] + random(-time, time);
+    writeLn('Taking a ' + toStr(round(time / 60000, 2)) + ' minute break');
+    players[currentPlayer].exitToLobby();
+    mouseOffClient(OFF_CLIENT_RANDOM);
+    sleep(time);
+    loginPlayer();
+    players[currentPlayer].worked.start();
+    FailTimer.start();
+  end;
+end;
+
+procedure walkToDocks();
+var
+   pathToDocks: TPointArray;
+begin
+  if not isLoggedIn() then
+    exit;
+  if tabBackPack.isFull() then
+    exit;
+
+  pathToDocks := [Point(106, 98), Point(130, 106), Point(162, 110), Point(162, 102)]
+  begin
+    aDebug('Walking To The Docks');
+  end;
+  if SPS.walkPath(pathToDocks) then
+    minimap.waitPlayerMoving()
+  else
+  begin
+    writeLn('Failed To Walk To The Docks');
+    terminatescript;
+ end;
+end;
+
+{*Inspired By Fady's Antiban*}
+procedure antiBan();
+begin
+  if not isLoggedin() then exit;
+  case random(150) of
+	0..15:  begin
+			      pickUpMouse();
+			      wait(randomRange(250, 400));
+			      mouseOffClient(OFF_CLIENT_RANDOM, randomRange(1500, 2500));
+		      end;
+	16..30: begin
+	          sleepAndMoveMouse(randomRange(750, 2500));
+			      wait(randomRange(500, 1250));
+	        end;
+	31..33: begin;
+            hoverSkill(SKILL_FISHING);
+            wait(randomRange(1500, 2500));
+          end;
+  34:     begin
+            smallRandomMouse();
+          end;
+  end;
+end;
+
+procedure miniBreak();
+begin
+  if not isLoggedIn() then exit;
+  case random(30) of
+  0..1: begin
+          writeLn('Taking a Mini-Break');
+          mouseoffClient(OFF_CLIENT_RANDOM);
+          wait(gaussRangeInt(22000,65000));
+        end;
+  end;
+end;
+
+{*Made with the help of Fady*}
+function getSpotLimit: Tbox;
+var
+  x, y, i: integer;
+  TPAbridge: TPointArray;
+  ATPAbridge: T2DPointArray;
+  bridgeBox: Tbox;
+begin
+  if not isLoggedIn() then exit;
+    findColorsSpiralTolerance(x, y, TPAbridge, 4084065, mainScreen.getBounds(), 6, colorSetting(2, 0.60, 0.25));
+    TPAbridge.excludePointsDist(0,150,mainscreen.playerPoint.X,mainscreen.playerPoint.Y);
+
+  if length(TPAbridge) > 0 then
+  begin
+    ATPAbridge := TPAbridge.cluster(17);
+
+    if length(ATPAbridge) > 0 then
+    begin
+      ATPAbridge.sortBySize();
+      //SmartImage.debugATPA(ATPAbridge); //Debug The Bridge Box
+      bridgeBox:= ATPAbridge[0].getBounds();
+	    bridgeBox.expand(38);
+      bridgeBox.setLimit(mainscreen.getBounds);
+      result:= bridgeBox;
+      //SmartImage.drawBox(bridgeBox,false,clRed); //Debug The Expanded Bridge Box
+	  end;
+	end;
+end;
+
+{*Borrowed from Footballjds Fishing Guild Script*}
+function fishChoice: boolean;
+var
+  tOptions: TOptionArray;
+  options: TStringArray;
+  i: integer;
+begin
+  tOptions := chooseOption.getOptions;
+  if not(length(tOptions) > 0)then exit;
+  for i := 0 to high(tOptions) do insert(tOptions[i].str, options);
+  options.invert;
+  case players[currentPlayer].strings[0] of
+    'Lobster':  begin
+                  if chooseOption.select(['Cage']) then
+                  exit(true);
+                end;
+    'Swordfish':  begin
+                    for i := 0 to high(options) do
+                    begin
+                      if (pos('Harpoon', options[i]) > 0) then
+                        if i > 0 then if pos('Cage', options[i-1]) then
+                        begin
+                          mouseBox(tOptions[i].bounds, Mouse_Left);
+                          exit(true);
+                        end;
+                    end;
+                  end;
+    'Shark':  begin
+                for i := 0 to high(options) do
+                begin
+                  if (pos('Harpoon', options[i]) > 0) then
+                    if i > 0 then if pos('Net', options[i-1]) then
+                    begin
+                      mouseBox(tOptions[i].bounds, Mouse_Left);
+                      exit(true);
+                    end;
+                end;
+              end;
+    end;
+  wait(randomRange(1, 100)); chooseOption.close;
+end;
+
+{*Provided by The Mayor and adapted by Fady and me*}
+function findSpot(click: Boolean): boolean;
+var
+  x, y, i: integer;
+  TPAwater, TPAspot: TPointArray;
+  ATPAwater, ATPAspot: T2DPointArray;
+begin
+  if not isLoggedIn() then exit;
+  findColorsSpiralTolerance(x, y, TPAwater, 7294259, getSpotLimit(), 10, colorSetting(2, 0.15, 1.08));
+
+  if length(TPAwater) > 0 then
+  begin
+    mainScreen.filterPointsPlayer(TPAwater);
+    ATPAwater := TPAwater.cluster(10);
+    ATPAwater.filterBetween(1, 100);
+
+    if length(ATPAwater) > 0 then
+    begin
+      ATPAwater.sortFromMidPoint(mainScreen.playerPoint);
+
+      for i := 0 to high(ATPAwater) do
+      begin
+        findColorsSpiralTolerance(x, y, TPAspot, 12758170, ATPAwater[i].getBounds(), 23, colorSetting(2, 0.07, 0.79));
+
+        if length(TPAspot) > 0 then
+        begin
+          mainScreen.filterPointsPlayer(TPAspot);
+          ATPAspot := TPAspot.cluster(10);
+          ATPAspot.filterBetween(1, 3);
+
+          if length(ATPAspot) > 0 then
+          begin
+            ATPAspot.sortFromMidPoint(mainScreen.playerPoint);
+
+            for i := 0 to high(ATPAspot) do
+            begin
+              mouseBox(ATPAspot[i].getBounds(), MOUSE_MOVE);
+              if isMouseOverText(['Cage', 'Net']) then
+              begin
+                fishSpot := ATPAspot[i].getBounds.getMiddle;
+                if click then
+                begin
+                  fastClick(MOUSE_RIGHT)
+                  if fishChoice then
+                    exit(true);
+                end else
+                exit(true);
+              end;
+            end;
+          end;
+        end;
+      end;
+    end;
+  end;
+end;
+
+{*Made with the help of Fady*}
+function isStillFishing():boolean;
+var
+  pxShift:integer;
+  currentFishSpot:Tbox;
+Begin
+  CurrentFishSpot := intToBox(FishSpot.x-10, FishSpot.y-10,FishSpot.x+10,FishSpot.y+10);
+  //SmartImage.drawBox(CurrentFishSpot,false,clRed); //Debug Spot Box
+  pxShift := getPixelShiftAverage(currentFishSpot,randomRange(200, 220),randomRange(1000,1200));
+  Result := (pxShift > 10);
+End;
+
+{Procedure DebugShiftCount();
+var
+  CurrentFishSpot: TBox;
+begin
+  CurrentFishSpot := intToBox(FishSpot.x-10, FishSpot.y-10,FishSpot.x+10,FishSpot.y+10);
+  SmartImage.drawBox(CurrentFishSpot,false,clRed);
+  Writeln(IntToStr(getPixelShiftAverage(currentFishSpot,randomRange(200, 220),randomRange(1000,1200))));
+end;}
+
+{*Made with the help of Fady*}
+procedure fish();
+var
+  bTimer, dTimer, fTimer: TTimeMarker;
+  InitialCount, tries: Integer;
+begin
+  if tabBackPack.isFull() then exit();
+  if options.isOpen() then closePopUp();
+  bTimer.start;
+  repeat
+    repeat
+      aDebug('Looking For Spot');
+      wait(randomRange(1000, 2000));
+      if findSpot(True) then
+        break;
+      inc(tries);
+    until (tries > 6);
+
+    if (tries >6) then
+    begin
+      aDebug('Could not find correct fish choice, waiting 35-42 seconds');
+      mouseOffClient(OFF_CLIENT_RANDOM);
+      wait(gaussRangeInt(35000, 42000));
+      tries := 0
+    end else
+
+    begin
+      aDebug('Found Spot');
+      minimap.waitPlayerMoving();
+      dTimer.start;
+      repeat
+        findSpot(false);
+        wait(randomRange(100,250));
+        if (dTimer.getTime > 24000) then
+        begin
+          aDebug('Failed To Find Distance 75, walking to the docks');
+          exit;
+        end;
+      until (distance(fishSpot,mainScreen.playerPoint) < 75);
+        InitialCount := tabBackPack.count();
+        fTimer.start;
+        aDebug('Performing Antiban');
+        repeat
+          antiban();
+          if (not isStillFishing()) or (tabBackPack.isFull()) then
+            Break;
+            if (initialCount <> tabBackPack.count()) then
+            begin
+              fTimer.start;
+              bTimer.start;
+              initialCount := TabBackPack.count();
+            end;
+        Until (fTimer.getTime > randomRange(35000,40000));
+          smartImage.clear();
+          aDebug('Done Fishing');
+    end;
+    if (bTimer.getTime > 600000) then
+    begin
+      aDebug('It Took More Than 10 Minutes To Fill Inventory, Shutting Down');
+      terminateScript;
+    end;
+  until tabBackPack.isFull();
+    aDebug('Inventory Is Full');
+    wait(gaussRangeInt(1500,3500));
+end;
+
+procedure walkToBank();
+var
+   pathToBank: TPointArray;
+begin
+  if not isLoggedIn() then
+    exit;
+
+  pathToBank := [Point(162, 102), Point(162, 110), Point(130, 106), Point(106, 98)]
+  begin
+    aDebug('Walking To The Bank');
+  end;
+  if SPS.walkPath(pathToBank) then
+
+      minimap.waitPlayerMoving()
+  else
+  begin
+    writeLn('Failed To Walk To The Bank');
+    terminatescript;
+ end;
+end;
+
+{*Made with the help of Fady*}
+function findBanker(): Boolean;
+var
+  x, y, i: integer;
+  ATPA: T2DPointArray;
+  TPA: TPointArray;
+begin
+  if bankScreen.isOpen() then
+    exit(True);
+
+  findColorsSpiralTolerance(x, y, TPA, 6448235, mainScreen.getBounds(), 5, colorSetting(2, 0.75, 0.19));
+
+  if (Length(TPA) < 1) then
+    exit(false);
+
+  ATPA := TPA.cluster(4);
+  ATPA.sortFromMidPoint(mainScreen.playerBox.getRandomPoint);
+
+  FilterTPAsBetween(ATPA,1,70);
+  //SmartImage.debugATPA(ATPA); //Debug The Banker Box
+
+  for i := 0 to high(ATPA) do
+  begin
+    mouse(ATPA[i].getBounds().getRandomPoint());
+    wait(gaussRangeInt(80,150));
+    if isMouseOverText(['anker', 'ank']) then
+    begin
+      fastClick(MOUSE_LEFT);
+      result := bankScreen.isOpen(gaussRangeInt(2000,4000)) or depositBox.isOpen(gaussRangeInt(2000,4000)) or pinScreen.isOpen(gaussRangeInt(2000,4000));
+      break;
+    end;
+  end;
+  smartImage.clear();
+end;
+
+{*Made with the help of Fady*}
+procedure banking();
+var
+  bankTimer: TTimeMarker;
+  tries: integer;
+begin
+  if not isLoggedIn() or not tabBackPack.isFull then exit;
+
+  repeat
+    if findBanker() then
+      break;
+    inc(tries);
+  until (tries > 9);
+
+  if (tries > 9) then
+  begin
+    writeLn('Failed to open bank 10 times');
+    terminateScript;
+  end;
+
+  bankTimer.start();
+  repeat
+    wait(randomRange(750, 1250));
+    if pinScreen.isOpen() then
+    pinScreen.enter(players[currentPlayer].bankPin);
+    wait(randomRange(250, 750));
+    if bankScreen.isOpen() then
+    begin
+      aDebug('Bank Depositing');
+      bankScreen.quickDeposit(QUICK_DEPOSIT_INVENTORY);
+      wait(gaussRangeInt(750,1500));
+    end else if depositBox.isOpen() then
+    begin
+      aDebug('Depositbox Depositing');
+      depositBox.quickDeposit(QUICK_DEPOSITBOX_INVENTORY);
+      wait(gaussRangeInt(750,1500));
+    end;
+  until (bankScreen.isPackEmpty) or (depositBox.isEmpty) or (bankTimer.getTime() > 30000);
+    if (banktimer.getTime() > 30000) then
+    begin
+      terminatescript();
+    end;
+      bankScreen.close(false);
+      depositBox.close();
+      inc(LoadsDone);
+end;
+
+procedure progressReport();
+var
+  fishPerHour, xpGained, xpPerHour: integer;
+begin
+  clearDebug();
+
+  fishCaught := LoadsDone * 28;
+  fishPerHour := round((fishCaught * 60) / (getTimeRunning / 60000));
+  xpGained := (chatBox.getXPBar - StartingXP);
+  xpPerHour := round((xpGained * 60) / (getTimeRunning / 60000));
+
+  writeLn('=============================================');
+  writeLn('Semtex Fishing Guilder');
+  writeLn('Time Run: ' + timeRunning);
+  writeLn('Fish Caught: ' + intToStr(fishCaught));
+  writeLn('Fish Per Hour: ' + intToStr(fishPerHour));
+  writeLn('Loads Done: ' + intToStr(loadsDone));
+  writeLn('Experience Gained: ' + intToStr(xpGained));
+  writeLn('Experience Per Hour: ' + intToStr(xpPerHour));
+  writeLn('Break in: ' + msToTime(players[currentPlayer].integers[1] - players[currentPlayer].worked.getTime(), TIME_ABBREV));
+  writeLn('=============================================');
+end;
+
+procedure getUpdate();
+var
+  newFile: Integer;
+  newVer: Extended;
+begin
+  newVer := strToFloat(getPage('http://tomstewart.net/proxy.php?url=https://raw.githubusercontent.com/SRLSemtex/Fishing-Guild/master/version.txt'));
+  printf('Current script Version: %f || Online script Version: %f', [Version, newVer]);
+
+  if newVer > Version then
+  begin
+    printf('Updating SemtexFishingGuild.simba from Version %f to %f', [Version, newVer]);
+    newFile := rewriteFile(scriptPath + 'SemtexFishingGuild.simba', false);
+    writeFileString(newFile, getPage('http://tomstewart.net/proxy.php?url=https://raw.githubusercontent.com/SRLSemtex/Fishing-Guild/master/SemtexFishingGuild.simba'));
+    closeFile(newFile);
+    print('Please reopen this file');
+    terminateScript();
+  end;
+end;
+
+procedure getMap();
+var
+  itemFile: LongInt;
+begin
+  if fileExists(appPath + 'Includes/SPS/img/runescape_other/Fish_Guild.png') then exit();
+  closeFile(createFile(appPath + 'Includes/SPS/img/runescape_other/Fish_Guild.png'));
+  itemFile := reWriteFile(appPath + 'Includes/SPS/img/runescape_other/Fish_Guild.png', false);
+  writeFileString(itemFile, getPage('http://i58.tinypic.com/2rogo7c.png'));
+  closeFile(itemFile);
+end;
+
+procedure mainLoop();
+begin
+  if not isLoggedIn() then
+    loginPlayer();
+
+  if tabBackPack.isFull() then
+  begin
+    walkToBank();
+    banking();
+    miniBreak();
+  end;
+
+  progressReport();
+  takeBreak();
+  walkToDocks();
+  fish();
+  //DebugShiftCount();
+
+end;
+
+begin
+  clearDebug();
+  getUpdate();
+  getMap();
+  initPlayerForm();
+  runPlayerForm();
+  if not playerForm.isScriptReady then exit();
+
+  declarePlayers();
+  mouseSpeed := randomRange(25,31);
+  fishChoice();
+
+  {$IFDEF SMART}
+    smartEnableDrawing := True;
+    smartShowConsole := False;
+  {$ENDIF}
+
+  disableSRLLog := True;
+  disableSRLDebug := players[currentPlayer].booleans[0];
+  setupSRL();
+  sps.setup('Fish_Guild', RUNESCAPE_OTHER);
+  if not isLoggedIn() then
+  loginPlayer();
+  startingXP := chatBox.getXPBar();
+  players[currentPlayer].worked.start();
+  FailTimer.start();
+  //findSpot(false);
+
+  repeat
+    mainLoop();
+  until false;
+end.
